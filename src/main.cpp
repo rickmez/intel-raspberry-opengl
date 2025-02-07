@@ -28,6 +28,7 @@
 
 #include "visualization/visualization.hpp"
 #include "camera/camera.hpp"
+#include "ransac/ransac.hpp"
 #include <map>
 #include <GL/glut.h>
 #include <GL/freeglut.h>
@@ -35,6 +36,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp> // Include GLM header for matrix operations
+#include <Eigen/Dense>
 
 // // depth and rgb images
 // pthread_t real_sense_thread;
@@ -48,8 +50,6 @@ cv::Mat frame_mat, resized_frame;
 rs2::frame depthFrame;
 rs2::frame color;
 const rs2::vertex* vertices;
-
-size_t num_points = 0;
 
 // colorframe
 uint8_t color_frame = 0;
@@ -78,9 +78,13 @@ pthread_t update_thread;
 pthread_t frames_thread;
 pthread_t points_thread;
 pthread_t opengl_thread;
+pthread_t ransac_thread;
+pthread_t cleanUp_thread;
 
 pthread_mutex_t gl_backbuf_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t gl_frame_cond = PTHREAD_COND_INITIALIZER;
+
+std::mutex localPointCloudMutex;
 
 int window;
 GLuint gl_depth_tex;
@@ -120,21 +124,36 @@ float gyro_x = 0.0f, gyro_y = 0.0f;
 float alpha = 0.98f;
 float dt = 0.01f; // Assuming 100Hz IMU update rate
 
+uint8_t gen_thread, run_cam_thread, proc_thread = 0;
 
-struct PointCloudData {
-    float x;   // X coordinate
-    float y;   // Y coordinate
-    float z;   // Z coordinate
-    float r;   // Red
-    float g;   // Green
-    float b;   // Blue
+uint8_t ransac_data = 0;
+// std::vector<Eigen::Vector3d> localPointCloud; // Local point cloud
 
-    // Optional constructor for convenience
-    PointCloudData(float x_, float y_, float z_, float r_ = 1.0f, float g_ = 1.0f, float b_ = 1.0f)
-        : x(x_), y(y_), z(z_), r(r_), g(g_), b(b_) {}
-};
+
+// struct PointCloudData {
+//     float x;   // X coordinate
+//     float y;   // Y coordinate
+//     float z;   // Z coordinate
+//     float r;   // Red
+//     float g;   // Green
+//     float b;   // Blue
+
+//     // Optional constructor for convenience
+//     PointCloudData(float x_, float y_, float z_, float r_ = 1.0f, float g_ = 1.0f, float b_ = 1.0f)
+//         : x(x_), y(y_), z(z_), r(r_), g(g_), b(b_) {}
+// };
 
 std::vector<PointCloudData> pointCloud;
+
+// Shared data structure
+struct SharedData {
+    std::vector<Eigen::Vector3d> pointCloud; // Point cloud data
+    std::vector<Eigen::Vector3d> inliers;    // Inliers from RANSAC
+    bool pointCloudReady = false;            // Flag to indicate new point cloud is available
+    std::mutex mutex;                        // Mutex for thread-safe access
+};
+
+SharedData sharedData; // Global shared data
 
 // Function to handle window resizing
 void reshape(int width, int height) {
@@ -253,11 +272,11 @@ void drawXYZAxes() {
 float ax, ay, az , gx, gy = 0;
 
 uint8_t got_depth = 0;
+uint8_t got_Inliers = 0;
 
 void DrawGLScene()
 {
-    pthread_mutex_lock(&gl_backbuf_mutex);
-
+    
     glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glLoadIdentity();
@@ -271,44 +290,91 @@ void DrawGLScene()
     glPointSize(3.0f);
     drawXYZAxes();
 
+    glBegin(GL_POINTS);
     if (point_cloud_available) {
-        glBegin(GL_POINTS);
 
-        for (const auto& point : pointCloud) {
-            glColor3f(point.r, point.g, point.b);
-            glVertex3f(point.x, point.y, point.z);
-            // std::cout << "Position: (" << point.x << ", " << point.y << ", " << point.z << ")\n";
-            // std::cout << "Color: R=" << point.r << ", G=" << point.g << ", B=" << point.b << "\n";
-        }
         
-        glEnd();
-    }
-    
-    pthread_mutex_unlock(&gl_backbuf_mutex);
+        for (const auto& point : pointCloud) {
+            glColor3f(point.color.x(), point.color.y(), point.color.z());
+            glVertex3f(point.position.x(), point.position.y(), point.position.z());
+        }
 
+
+        // if(got_Inliers){
+
+        // }
+
+        // point_cloud_available = false;
+        
+    }
+    glEnd();
+    
     glutSwapBuffers();
+    
+    // pthread_mutex_unlock(&gl_backbuf_mutex);
 }
 
 
+void* RANSAC_INLIERS(void* arg){
+    // pthread_mutex_lock(&gl_backbuf_mutex);
+    while(!done) {
+        
+        std::lock_guard<std::mutex> lock(localPointCloudMutex);
+        if(ransac_data){
+            // std::cout << "Number of inliers: " << localPointCloud.size() << std::endl;
+            PlaneModel result = fit_plane_ransac(pointCloud, 10, 100, Eigen::Vector3d(0, 1, 0));
+            
+            ransac_data = 0;
+            got_Inliers = 1;
+        }
+        // // Check if a new point cloud is available
+        // {
+        //     std::lock_guard<std::mutex> lock(sharedData.mutex);
+        //     if (sharedData.pointCloudReady) {
+        //         localPointCloud = sharedData.pointCloud; // Copy the point cloud
+        //         sharedData.pointCloudReady = false;      // Reset the flag
+        //     }
+        // }
 
-void* pointcloud_generate(void* arg){
+        // // Run RANSAC if a new point cloud is available
+        // if (!localPointCloud.empty()) {
+
+        //     // Save the inliers
+        //     {
+        //         std::lock_guard<std::mutex> lock(sharedData.mutex);
+        //         sharedData.inliers = result.inliers;
+        //     }
+
+        //     // Optionally, print or save the inliers
+        // }
+        
+    }
+    std::cout<< "closing thread: RANSAC_INLIERS "<<std::endl;
+    pthread_exit(NULL);
+    return NULL;
+}
+
+
+void* pointcloud_generate(void* arg) {
     const float scaleX = 1280.0f / 848.0f;
     const float scaleY = 720.0f / 480.0f;
-    while(!done){
-        if(point_cloud_data){
-            
-            pointCloud.clear();
+    const int step_x = 11;
+    const int step_y = 11;
 
-            for (int y = 0; y < 480; ++y) {
-                for (int x = 0; x < 848; ++x) {
+    while (!done) {
+        if (point_cloud_data & config_flag) {
+
+            std::lock_guard<std::mutex> lock(localPointCloudMutex);
+            pointCloud.clear();
+            // localPointCloud.clear();
+
+            for (int y = 0; y < 480; y += step_y) {
+                for (int x = 0; x < 848; x += step_x) {
                     int i = y * 848 + x;
-                    
-                    // Extract depth value (convert 16-bit depth to mm)
                     int depth_value = depth_front[3 * i + 0] << 8 | depth_front[3 * i + 1];
 
-                    if (depth_value > 0 && depth_value < 5000) { // Valid depth range (0-5 meters)
-                        // Convert depth pixel to world coordinates
-                        float z = depth_value * 0.001f; // Convert mm to meters
+                    if (depth_value > 0 && depth_value < 4000) {
+                        float z = depth_value * 0.001f;
                         float x_world = (x - cx) * z / fx;
                         float y_world = (y - cy) * z / fy;
 
@@ -317,47 +383,58 @@ void* pointcloud_generate(void* arg){
                         float cos_alpha = cos(s_roll);
                         float sin_alpha = sin(s_roll);
 
-                        float x_new = cos_theta * x_world - sin_alpha * sin_theta * y_world + cos_alpha * sin_theta * z;
-                        float y_new = cos_alpha * y_world + sin_alpha * z;
-                        float z_new = -sin_theta * x_world - sin_alpha * cos_theta * y_world + cos_alpha * cos_theta * z;
+                        Eigen::Vector3f rotated(
+                            cos_theta * x_world - sin_alpha * sin_theta * y_world + cos_alpha * sin_theta * z,
+                            cos_alpha * y_world + sin_alpha * z,
+                            -sin_theta * x_world - sin_alpha * cos_theta * y_world + cos_alpha * cos_theta * z
+                        );
 
-                        // Map depth pixel to corresponding RGB pixel
                         int rgb_x = static_cast<int>(x * scaleX);
                         int rgb_y = static_cast<int>(y * scaleY);
-                        int rgb_idx = (rgb_y * 1280 + rgb_x) * 3; // RGB buffer index
+                        int rgb_idx = (rgb_y * 1280 + rgb_x) * 3;
 
-                        // Extract RGB color (normalize to [0,1] for OpenGL)
-                        float r = rgb_front[rgb_idx + 0] / 255.0f;
-                        float g = rgb_front[rgb_idx + 1] / 255.0f;
-                        float b = rgb_front[rgb_idx + 2] / 255.0f;
+                        Eigen::Vector3f color(
+                            rgb_front[rgb_idx + 0] / 255.0f,
+                            rgb_front[rgb_idx + 1] / 255.0f,
+                            rgb_front[rgb_idx + 2] / 255.0f
+                        );
 
-                        // pointCloud.push_back(PointCloudData(x_world, y_world, z, r, g, b)); // Red
-                        pointCloud.push_back(PointCloudData(x_new, y_new, z_new, r, g, b)); // Red
-
-                        // glColor3f(r, g, b);
-                        // glVertex3f(x_world, y_world, z);
+                        pointCloud.emplace_back(rotated.x(), rotated.y(), rotated.z(), color.x(), color.y(), color.z());
+                        // localPointCloud.push_back(rotated);
+                        ransac_data++;
                     }
                 }
             }
-            
             point_cloud_available = true;
         }
     }
-
+    std::cout << "closing thread: pointcloud_generate" << std::endl;
+    pthread_exit(NULL);
     return NULL;
 }
 
+
+uint8_t got_rgb = 0;
+
 void* process_frame_raw_data(void* arg) {
+
     while(!done){
-        if (depth_frame_flag && color_frame) {
-            pthread_mutex_lock(&gl_backbuf_mutex);
+        if (depth_frame_flag && color_frame && config_flag) {
+            // pthread_mutex_lock(&gl_backbuf_mutex);
+            
+
             uint16_t *depth = (uint16_t *)depth_data;
-            rgb_mid = (uint8_t*)video_data;
             
-            uint8_t *tmp = rgb_front;
-            rgb_front = rgb_mid;
-            rgb_mid = tmp;
-            
+            if(rgb_back != (uint8_t*)video_data){
+                rgb_back = (uint8_t*)video_data;
+                rgb_mid = rgb_back;
+                got_rgb = 1;
+            }
+
+            if(got_rgb){
+                rgb_front = rgb_mid;
+                got_rgb = 0;
+            }
 
             for (int i = 0; i < 848 * 480; i++) {
                 int pval = depth[i];
@@ -388,24 +465,43 @@ void* process_frame_raw_data(void* arg) {
             got_depth = 1;
             
             if (got_depth) {
-                uint8_t *tmp = depth_front;
+                // uint8_t *tmp = depth_front;
                 depth_front = depth_mid;
-                depth_mid = tmp;
+                // depth_mid = tmp;
                 got_depth = 0;
                 point_cloud_data = true;
             }
 
             color_frame = 0; // Reset the flag
             depth_frame_flag = 0; // Reset the flag
-            pthread_mutex_unlock(&gl_backbuf_mutex);
+            // pthread_mutex_unlock(&gl_backbuf_mutex);
         }
     }
+    proc_thread++;
+    std::cout<< "closing thread: process_frame_raw_data "<<std::endl;
+    pthread_exit(NULL);
     return NULL;
 }
 
 
+void keyboard(unsigned char key, int x, int y) {
+    if (key == 27) { // 27 is the ASCII code for the Escape key
+        // cleanup here
+        done = true;
+        
+        pthread_join(update_thread, NULL);
+        pthread_join(frames_thread, NULL);
+        pthread_join(points_thread, NULL);
+
+        std::cout<< "CleanUp complete\n"<<std::endl;
+        glutDestroyWindow(glutGetWindow());
+    }
+}
+
 
 void* RealSenseThread(void* arg) {
+    // Register the cleanup function
+    // atexit(cleanup);
     
     printf("GL thread\n");
     glutInit(&g_argc, g_argv);
@@ -419,9 +515,11 @@ void* RealSenseThread(void* arg) {
     glutMouseFunc(mouse);
     glutMouseWheelFunc(mouseWheel);  // Register the mouse scroll function
     glutMotionFunc(mouseMotion);
+    glutKeyboardFunc(keyboard);
     glEnable(GL_DEPTH_TEST);
     glClearDepth(1.0);
     glutMainLoop();
+
 
     return NULL;
 }
@@ -443,67 +541,63 @@ void InitGL()
 void* run_camera(void *arg){
     try {
         
-        std::string bag_file = "/home/rick/Downloads/20250115_154457.bag";
+        std::string bag_file = "/home/rick/Downloads/20250115_153938.bag";
         auto pipe_video = std::make_shared<rs2::pipeline>();
-        // auto pipe_sensor = std::make_shared<rs2::pipeline>();
         
         rs2::config cfg_video;
-        // rs2::config cfg_sensor;
         
         // enable different modes
         cfg_video.enable_device_from_file(bag_file);      // from a file
         cfg_video.enable_stream(RS2_STREAM_DEPTH);
         cfg_video.enable_stream(RS2_STREAM_COLOR);
-
         cfg_video.enable_stream(RS2_STREAM_GYRO,RS2_FORMAT_MOTION_XYZ32F);
         cfg_video.enable_stream(RS2_STREAM_ACCEL,RS2_FORMAT_MOTION_XYZ32F);
         // cfg_sensor.enable_stream(RS2_STREAM_POSE,RS2_FORMAT_MOTION_XYZ32F);
         
         pipe_video->start(cfg_video);
-        // pipe_sensor->start(cfg_sensor);
         
         auto device = pipe_video->get_active_profile().get_device();
         rs2::playback playback = device.as<rs2::playback>();
         playback.set_real_time(false);
 
-        // auto device_sensor = pipe_sensor->get_active_profile().get_device();
-        // rs2::playback playback_sensor = device_sensor.as<rs2::playback>();
-        // playback_sensor.set_real_time(false);
-
-        // playback.set_playback_speed(10.0);
-        // std::vector<rs2::sensor> sensors = device.query_sensors();
-
+        // ########## THESE FUNCTIONS ONLY NEED TO BE RUN ONCE TO EXTRACT THE INTRINSICS
         // auto Depth_sensor = get_a_sensor_from_a_device(device);
         // auto Depth_stream_profile = choose_a_streaming_profile(Depth_sensor);
-
         // get_field_of_view(Depth_stream_profile);
 
+
         rs2::frameset frameset;
-        // rs2::pointcloud pc;  // Point cloud object
-        // rs2::points points;  // Container for calculated point cloud data
-        
-        // const rs2::vertex* vertices; 
-        size_t num_points;
+        rs2::frame gyro_frame;
+        rs2::frame acce_frame;
+
         uint64_t posCurr = playback.get_position();
 
-        // uint64_t posCurr_s = playback_sensor.get_position();
-        // int indx = 0;
-        
         config_flag = 1;
 
         // pipe->try_wait_for_frames(&frameset, 1000)
-        while (pipe_video->try_wait_for_frames(&frameset, 1000)) {
+        while (pipe_video->try_wait_for_frames(&frameset, 1000) && !done) {
             
+            // #### Alternate ways to get a frameset ####
             // auto frameset = pipe_video->wait_for_frames(1000);
             // auto frameset_sensor = pipe_sensor->wait_for_frames(1000);
             
-            auto gyro_frame = frameset.first(RS2_STREAM_GYRO,RS2_FORMAT_MOTION_XYZ32F);
-            auto acce_frame = frameset.first(RS2_STREAM_ACCEL ,RS2_FORMAT_MOTION_XYZ32F);
+            // motion frames
+            try{
+                gyro_frame = frameset.first(RS2_STREAM_GYRO,RS2_FORMAT_MOTION_XYZ32F);
+                acce_frame = frameset.first(RS2_STREAM_ACCEL ,RS2_FORMAT_MOTION_XYZ32F);
+                // auto pose = (frameset.get_pose_frame()).as<rs2::pose_frame>();
+            }
+            catch (const rs2::error& e) {
+                std::cerr << "RealSense error: " << e.what() << std::endl;
+            }
             
-            
+            // depth frames
             depthFrame = (frameset.get_depth_frame()).as<rs2::depth_frame>();
+            // rgb frames
             color = frameset.get_color_frame();
-            // auto pose = (frameset.get_pose_frame()).as<rs2::pose_frame>();
+            
+
+
             if (!depthFrame || !color) {
                 std::cerr << "Invalid frames!" << std::endl;
             }
@@ -519,15 +613,20 @@ void* run_camera(void *arg){
                 // get color
                 
                 auto videoframe = color.as<rs2::video_frame>();
-                // width = videoframe.get_width();
-                // height = videoframe.get_height();
+                width = videoframe.get_width();
+                height = videoframe.get_height();
+                
                 stride = videoframe.get_stride_in_bytes();
                 video_data = videoframe.get_data();
-                color_frame = 1;
                 
                 depth_data = depthFrame.get_data();
-                depth_frame_flag = 1;
-
+                
+                if (!video_data || !depth_data) 
+                    std::cerr << "Invalid frames!" << std::endl;
+                else{
+                    color_frame = 1;
+                    depth_frame_flag = 1;
+                }
         
             }
             
@@ -535,11 +634,14 @@ void* run_camera(void *arg){
             if (posNext < posCurr) break;
             posCurr = posNext;
 
-            std::string str = "ESC";
-            char ch;
-            if ((ch = std::cin.get()) == 27) {
-                std::cout << str;   
-            }
+            // if (kbhit()) {
+            //     char ch = getchar();
+            //     if (ch == 27) {  // 27 is the ASCII code for ESC
+            //         point_cloud_available = false;
+            //         std::cout << "ESC pressed. Exiting...\n";
+            //         break;
+            //     }
+            // }
 
 
             // auto posNext_s = playback_sensor.get_position();
@@ -547,7 +649,10 @@ void* run_camera(void *arg){
             // posCurr_s = posNext_s;
             
         }
-        done = true;
+        run_cam_thread++;
+        pipe_video->stop();
+        std::cout<< "closing thread: run_camera"<<std::endl;
+        pthread_exit(NULL);
     }
 
 
@@ -565,11 +670,13 @@ int main(int argc, char* argv[]) {
     
     // CreateAndInitWindow();
 
+
     depth_mid = (uint8_t *)malloc(848 * 480 * 3);
     depth_front = (uint8_t *)malloc(848 * 480 * 3);
-    rgb_back = (uint8_t*)malloc(848*480*3);
-    rgb_mid = (uint8_t*)malloc(848*480*3);
-	rgb_front = (uint8_t*)malloc(848*480*3);
+    
+    rgb_back = (uint8_t*)malloc(1280 * 720 * 3);
+    rgb_mid = (uint8_t*)malloc(1280 * 720 * 3);
+	rgb_front = (uint8_t*)malloc(1280 * 720 * 3);
 
     g_argc = argc;
     g_argv = argv;
@@ -598,11 +705,18 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
+    // Create the second thread
+    if (pthread_create(&ransac_thread, NULL, RANSAC_INLIERS, NULL) != 0) {
+        std::cerr << "Error creating RANSAC_INLIERS thread!" << std::endl;
+        return -1;
+    }
+
     // Wait for threads to finish
     pthread_join(update_thread, NULL);
     pthread_join(frames_thread, NULL);
     pthread_join(points_thread, NULL);
     pthread_join(opengl_thread, NULL);
+    pthread_join(ransac_thread, NULL);
 
     // run_camera();
 
