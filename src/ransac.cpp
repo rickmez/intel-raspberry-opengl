@@ -51,12 +51,13 @@ PlaneModel fit_plane_ransac(const std::vector<PointCloudData>& data, float thres
         Eigen::Vector3d p1 = data[dis(gen)].position.cast<double>();
         Eigen::Vector3d p2 = data[dis(gen)].position.cast<double>();
         Eigen::Vector3d p3 = data[dis(gen)].position.cast<double>();
-
+        
         // Fit a plane to the sampled points.
         Eigen::Vector3d normalVector = calculate_plane_normal(p1, p2, p3);
         float diff = angle_between_vectors(normalVector, remove) * (180.0f / M_PI);
 
-        if (diff < 10) {
+        if (diff < 5) {
+            std::cout<< "angle" << diff <<std::endl;
             float d = -normalVector.dot(p1);
             Eigen::Vector4d Currplane;
             Currplane << normalVector, d;
