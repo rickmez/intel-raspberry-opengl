@@ -310,8 +310,8 @@ uint16_t *depth;
 uint8_t *depth_mid, *depth_front;
 uint8_t *rgb_back, *rgb_mid, *rgb_front;
 
-uint8_t *depth_front;
-uint8_t *rgb_front;
+// uint8_t *depth_front;
+// uint8_t *rgb_front;
 
 bool done = false;
 
