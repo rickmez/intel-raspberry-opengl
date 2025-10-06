@@ -34,6 +34,7 @@ struct PointCloudData {
         : position(x, y, z), color(r, g, b) {}
 };
 
+
 PlaneModel fit_plane_ransac(const std::vector<PointCloudData>& data, float threshold = 0.01, int max_iterations = 100, const Eigen::Vector3d& remove = Eigen::Vector3d(0, 1, 0));
 // Free functions
 Eigen::Vector3d calculate_plane_normal(const Eigen::Vector3d& p1, const Eigen::Vector3d& p2, const Eigen::Vector3d& p3);

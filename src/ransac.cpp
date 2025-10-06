@@ -35,8 +35,6 @@ Eigen::Vector3d calculate_plane_normal(const Eigen::Vector3d& p1, const Eigen::V
 }
 
 // Fit a plane using RANSAC
-
-
 PlaneModel fit_plane_ransac(const std::vector<PointCloudData>& data, float threshold, int max_iterations, const Eigen::Vector3d& remove) {
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -56,8 +54,8 @@ PlaneModel fit_plane_ransac(const std::vector<PointCloudData>& data, float thres
         Eigen::Vector3d normalVector = calculate_plane_normal(p1, p2, p3);
         float diff = angle_between_vectors(normalVector, remove) * (180.0f / M_PI);
 
-        if (diff < 5) {
-            std::cout<< "angle" << diff <<std::endl;
+        if (diff < 4) {
+            // std::cout<< "angle" << diff <<std::endl;
             float d = -normalVector.dot(p1);
             Eigen::Vector4d Currplane;
             Currplane << normalVector, d;

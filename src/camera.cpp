@@ -5,6 +5,27 @@
 #include <iostream>
 
 
+
+
+
+
+std::string formatTimeStamp(double timestamp_ms){
+    // Convert milliseconds to seconds
+    
+    std::time_t time_sec = static_cast<std::time_t>(timestamp_ms / 1000);
+    // Convert to local time (or use gmtime for UTC)
+    std::tm* tm_ptr = std::localtime(&time_sec);
+    // Format the timestamp as a string
+    std::ostringstream oss;
+    oss << std::put_time(tm_ptr, "%Y-%m-%d %H:%M:%S");
+    // If you need to see fractional seconds, you can append them manually:
+    int ms = static_cast<int>(timestamp_ms) % 1000;
+    oss << "." << std::setfill('0') << std::setw(3) << ms;
+    std::string formattedTime = oss.str();
+
+    return formattedTime;
+}
+
 uint32_t get_user_selection(const std::string& prompt_message)
 {
     std::cout << "\n" << prompt_message;
@@ -143,6 +164,41 @@ rs2::stream_profile choose_a_streaming_profile(const rs2::sensor& sensor)
     }
 
     return stream_profiles[selected_profile_index];
+}
+
+
+void get_extrinsics(const rs2::stream_profile& from_stream, const rs2::stream_profile& to_stream)
+{
+    // If the device/sensor that you are using contains more than a single stream, and it was calibrated
+    // then the SDK provides a way of getting the transformation between any two streams (if such exists)
+    try
+    {
+        // Given two streams, use the get_extrinsics_to() function to get the transformation from the stream to the other stream
+        rs2_extrinsics extrinsics = from_stream.get_extrinsics_to(to_stream);
+        std::cout << "Translation Vector : [" << extrinsics.translation[0] << "," << extrinsics.translation[1] << "," << extrinsics.translation[2] << "]\n";
+        std::cout << "Rotation Matrix    : [" << extrinsics.rotation[0] << "," << extrinsics.rotation[3] << "," << extrinsics.rotation[6] << "]\n";
+        std::cout << "                   : [" << extrinsics.rotation[1] << "," << extrinsics.rotation[4] << "," << extrinsics.rotation[7] << "]\n";
+        std::cout << "                   : [" << extrinsics.rotation[2] << "," << extrinsics.rotation[5] << "," << extrinsics.rotation[8] << "]" << std::endl;
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Failed to get extrinsics for the given streams. " << e.what() << std::endl;
+    }
+}
+
+
+void show_extrinsics_between_streams(rs2::device device, rs2::sensor sensor)
+{
+    // A rs2::device can have its sensors and streams calibrated and provide the extrinsics between 2 streams.
+    std::cout << "Please choose a sensor and then a stream that will be used as the origin of extrinsic transformation:\n" << std::endl;
+    rs2::sensor from_sensor = get_a_sensor_from_a_device(device);
+    rs2::stream_profile from = choose_a_streaming_profile(from_sensor);
+
+    std::cout << "Please choose a sensor and then a stream that will be used as the target of extrinsic transformation::\n" << std::endl;
+    rs2::sensor to_sensor = get_a_sensor_from_a_device(device);
+    rs2::stream_profile to = choose_a_streaming_profile(to_sensor);
+
+    get_extrinsics(from, to);
 }
 
 void get_field_of_view(const rs2::stream_profile& stream)
