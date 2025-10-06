@@ -10,7 +10,18 @@
 ~~~sh
 sudo apt-get update && sudo apt-get dist-upgrade
 sudo apt install mesa-utils
-sudo apt install freeglut3-dev libglew2.1 libglew-dev
+
+sudo apt install -y \
+    libopencv-dev \
+    libeigen3-dev \
+    libusb-1.0-0-dev \
+    libglew-dev \
+    freeglut3-dev \
+    libglew2.1 \
+    libopenal-dev \
+    libglm-dev \
+    libomp-dev
+
 ~~~
 2° Check OpenGL version
 ~~~sh
